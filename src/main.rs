@@ -45,13 +45,15 @@ mod solution {
                         continue;
                     }
 
+                    eprintln!("No valid action returned. {}", &best_action);
+
                     //No action was found.
                     println!("WAIT");
                 }
             }
 
-            fn read_actions() -> (ActionsRepository, HashSet<i32>) {
-                let mut repo = ActionsRepository::new();
+            fn read_actions() -> (Box<ActionsRepository>, HashSet<i32>) {
+                let mut repo = Box::new(ActionsRepository::new());
                 repo.add_rest();
 
                 //Define values
@@ -115,7 +117,7 @@ mod solution {
                 (repo, my_inactive_spells)
             }
 
-            fn read_state(my_inactive_spells: HashSet<i32>) -> State {
+            fn read_state(my_inactive_spells: HashSet<i32>) -> Box<State> {
                 let mut my_ingredients: [i32; INGREDIENT_TIER_COUNT] = [0; INGREDIENT_TIER_COUNT];
                 let mut my_rupees: i32 = 0;
 
@@ -141,14 +143,14 @@ mod solution {
                     }
                 }
 
-                State::new(
+                Box::new(State::new(
                     my_ingredients,
                     my_rupees,
                     HashSet::new(),
                     my_inactive_spells,
                     HashSet::new(),
                     None,
-                    0)
+                    0))
             }
         }
     }
@@ -209,7 +211,7 @@ mod solution {
         pub struct ActionExecutor;
 
         impl ActionExecutor {
-            pub fn execute(repo: &ActionsRepository, state: &State, action_id: &i32) -> Option<State> {
+            pub fn execute(repo: &Box<ActionsRepository>, state: &State, action_id: &i32) -> Option<Box<State>> {
                 let state = state;
 
                 let action: Option<&Box<dyn Action>> = repo.get_action(&action_id);
@@ -224,14 +226,14 @@ mod solution {
                 let current_ingredients = state.get_ingredients();
 
                 if action.is_rest() {
-                    return Some(State::new(
+                    return Some(Box::new(State::new(
                         [current_ingredients[0], current_ingredients[1], current_ingredients[2], current_ingredients[3]],
                         state.get_rupees().clone(),
                         state.get_inactive_orders().clone(),
                         HashSet::new(), //Reset inactive spells
                         state.get_learnt_spells().clone(),
                         Some(root_action_id),
-                        state.get_depth() + 1));
+                        state.get_depth() + 1)));
                 }
 
                 let mut default_ingredient_change = [0; INGREDIENT_TIER_COUNT];
@@ -313,33 +315,37 @@ mod solution {
                 }
 
                 //eprintln!("New state: {:#?}", new_state);
-                Some(new_state)
+                Some(Box::new(new_state))
             }
         }
 
         pub struct Solver;
 
         impl Solver {
-            pub fn search(state: State, repo: &ActionsRepository) -> i32 {
+            pub fn search(state: Box<State>, repo: &Box<ActionsRepository>) -> i32 {
                 let time = Instant::now();
+                eprintln!("Ingredients: {:?}", &state.get_ingredients());
 
-                let mut queue: VecDeque<State> = VecDeque::new();
+                let mut queue: VecDeque<Box<State>> = VecDeque::new();
                 queue.push_back(state);
 
-                let mut best: (f32, i32) = (std::f32::MIN, NULL_ACTION_ID); //(score, action_id)
+                //TODO: Score should cascade between parent nodes.
+                //let mut best: (f32, i32) = (std::f32::MIN, NULL_ACTION_ID); //(score, action_id)
+
+                let mut score_map: HashMap<i32, (i32, f32)> = HashMap::new(); //<root_id, <depth, score>>
 
                 let mut node_count = 0;
 
                 while !queue.is_empty() {
                     let current_state = queue.pop_front().unwrap();
 
-                    if time.elapsed().as_millis() >= TIMEOUT {
+                    if time.elapsed().as_millis() >= TIMEOUT - 1 {
                         eprintln!("TIMEOUT. Depth: {}", &current_state.get_depth());
                         break;
                     }
 
-                    let score = Solver::score(&current_state, repo);
                     let root_action_id = current_state.get_root_action_id().unwrap_or(NULL_ACTION_ID);
+                    let score = Solver::score(&current_state, repo);
 
                     node_count += 1;
 
@@ -348,9 +354,14 @@ mod solution {
 //                        eprintln!("Id: {}; Action type: {:?}; Score: {}, Depth: {}", root_action_id, action.get_action_type(), score, current_state.get_depth());
 //                    }
 
-                    if score > best.0 {
-                        //eprintln!("New best. Action: {}, Score: {}", root_action_id, score);
-                        best = (score, root_action_id);
+                    if root_action_id != NULL_ACTION_ID {
+                        if let Some(pair) = score_map.get_mut(&root_action_id) {
+                            if pair.0 > *current_state.get_depth() || score > pair.1 {
+                                score_map.insert(root_action_id, (*current_state.get_depth(), score));
+                            }
+                        } else {
+                            score_map.insert(root_action_id, (*current_state.get_depth(), score));
+                        }
                     }
 
                     if current_state.get_depth() >= &MAX_DEPTH {
@@ -364,19 +375,30 @@ mod solution {
                 }
 
                 eprintln!("Evaluated {} nodes.", &node_count);
-                best.1
+                let mut best: (i32, f32) = (NULL_ACTION_ID, std::f32::MIN); //best.1
+
+                for key in score_map.keys() {
+                    let value = score_map.get(key).unwrap();
+                    //eprintln!("Action: {}, Score: {}. Depth: {}", key, &value.1, &value.0);
+
+                    if value.1 > best.1 {
+                        //eprintln!("New best: ({}, {})", key, &value.1);
+                        best = (*key, value.1);
+                    }
+                }
+
+                best.0
             }
 
-            fn get_children(state: &State, repo: &ActionsRepository, time: &Instant) -> Vec<State> {
-                let mut new_states: Vec<State> = Vec::new();
+            fn get_children(state: &Box<State>, repo: &Box<ActionsRepository>, time: &Instant) -> Vec<Box<State>> {
+                let mut new_states: Vec<Box<State>> = Vec::new();
 
                 for action in repo.get_action_ids() {
                     if !state.is_action_active(&action) {
-                        //eprintln!("Inactive action: {}. State: {:#?}", action, state);
                         continue;
                     }
 
-                    if time.elapsed().as_millis() >= TIMEOUT - 1 {
+                    if time.elapsed().as_millis() >= TIMEOUT - 2 {
                         break;
                     }
 
@@ -389,51 +411,63 @@ mod solution {
                 new_states
             }
 
-            fn score(state: &State, repo: &ActionsRepository) -> f32 {
+            fn score(state: &Box<State>, repo: &Box<ActionsRepository>) -> f32 {
                 //eprintln!("Scoring state: {:#?}", state);
 
-                // Having rupees is the best place to be :). We reward rupees 10 times
-                let mut score: f32 = (state.get_rupees() * 10) as f32;
+                let mut score = 0.0;
 
                 let ingredients = state.get_ingredients();
 
+                //We get rewarded for these as well.
+                score += (ingredients[1] + ingredients[2] + ingredients[3]) as f32 * 0.0;
+
                 for order_id in repo.get_order_ids() {
+                    let action = repo.get_action(order_id).unwrap();
+                    let order: &Order = action.as_any().downcast_ref::<Order>().unwrap();
+                    let order_price = order.get_price().clone() as f32;
+                    let order_requirement = order.get_ingredient_change();
+
                     if state.get_inactive_orders().contains(order_id) {
+                        // Having rupees is the best place to be :).
+                        let mut completion_reward: f32 = 0.0;
+
+                        completion_reward += order_price * 100.0;
+                        completion_reward += order_requirement[0] as f32 * -0.5;
+                        completion_reward += order_requirement[1] as f32 * -1.0;
+                        completion_reward += order_requirement[2] as f32 * -2.0;
+                        completion_reward += order_requirement[3] as f32 * -3.0;
+
+                        score += completion_reward;
+
+                        //if debug { eprintln!("Added reward {} to score for order {}", completion_reward, order_id); }
                         continue;
                     }
 
-                    let action = repo.get_action(order_id).unwrap();
-                    let order: &Order = action.as_any().downcast_ref::<Order>().unwrap();
-                    score += Solver::score_brew(ingredients, order);
+
+                    //eprintln!("Adding score for order: {:#?}", order);
+
+                    let order_distance = min(ingredients[0] + order_requirement[0], 0) +
+                        min(ingredients[1] + order_requirement[1], 0) +
+                        min(ingredients[2] + order_requirement[2], 0) +
+                        min(ingredients[3] + order_requirement[3], 0);
+
+                    //eprintln!("Order distance: {}", order_distance);
+
+                    if order_distance >= 0 {
+                        // We're rewarding being able to brew with half the price of the order. i.e if we can brew 2 orders. go with the one that pays more.
+
+                        //if debug { eprintln!("Added distance reward {} to score for order {}", order_price * 0.3, order_id); }
+                        score += order_price * 0.3;
+                    }
+
+                    // We're punishing not being able to produce orders with half the distance.
+                    // We can multiply by the order price to have the price of the order influence what spells to cast.
+                    // i.e if we can cast 2 spells that will open up 2 orders, open the one that pays more
+
+                    //if debug && order_distance != 0 { eprintln!("Added distance punishment {} to score for order {}", order_distance as f32 * order_price * 0.3, order_id); }
+                    score += order_distance as f32 * order_price * 0.1;
                 }
 
-                score
-            }
-
-            fn score_brew(ingredients: &[i32; INGREDIENT_TIER_COUNT], order: &Order) -> f32 {
-                let mut score = 0.0;
-
-                let order_requirement = order.get_ingredient_change();
-                let half_price = order.get_price() as f32 / 2.0;
-
-                //eprintln!("Adding score for order: {:#?}", order);
-
-                let order_distance = min(ingredients[0] + order_requirement[0], 0) +
-                    min(ingredients[1] + order_requirement[1], 0) +
-                    min(ingredients[2] + order_requirement[2], 0) +
-                    min(ingredients[3] + order_requirement[3], 0);
-
-                //eprintln!("Order distance: {}", order_distance);
-
-                if order_distance >= 0 {
-                    // We're rewarding being able to brew with half the price of the order. i.e if we can brew 2 orders. go with the one that pays more.
-                    score += half_price;
-                }
-
-                // We're punishing not being able to produce orders with half the distance.
-                // We can multiply by the order price to have the price of the order influence what spells to cast.
-                // i.e if we can cast 2 spells that will open up 2 orders, open the one that pays more
-                score += order_distance as f32 / 2.0 * (half_price / 2.0);
                 score
             }
         }
@@ -443,6 +477,7 @@ mod solution {
     pub mod models {
         use std::any::Any;
         use std::collections::HashSet;
+        use std::hash::{Hash, Hasher};
 
         use crate::{INGREDIENT_TIER_COUNT, NO_INGREDIENT_CHANGE, REST_ID};
 
@@ -604,8 +639,8 @@ mod solution {
                 }
             }
 
-            pub fn get_price(&self) -> i32 {
-                self.price
+            pub fn get_price(&self) -> &i32 {
+                &self.price
             }
         }
 
@@ -627,6 +662,7 @@ mod solution {
             }
         }
 
+        #[derive(Eq, PartialEq)]
         pub struct State {
             my_ingredients: [i32; INGREDIENT_TIER_COUNT],
             my_rupees: i32,
@@ -635,6 +671,25 @@ mod solution {
             learnt_spells: HashSet<i32>,
             root_action_id: Option<i32>,
             depth: i32,
+        }
+
+        impl Hash for State {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.my_rupees.hash(state);
+                self.my_ingredients.hash(state);
+
+                for inactive_order in &self.inactive_orders {
+                    inactive_order.hash(state);
+                }
+
+                for inactive_spell in &self.inactive_spells {
+                    inactive_spell.hash(state);
+                }
+
+                for learnt_spell in &self.learnt_spells {
+                    learnt_spell.hash(state);
+                }
+            }
         }
 
         impl State {

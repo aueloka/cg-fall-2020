@@ -1,27 +1,37 @@
-use crate::solution::execution::Game;
+extern crate rand;
+
+use crate::solution::execution::{Game, Strategy};
+
 
 macro_rules! parse_input {
     ($x:expr, $t:ident) => ($x.trim().parse::<$t>().unwrap())
 }
 
 const TIMEOUT: u128 = 50;
-const MAX_DEPTH: i32 = 5;
-const NULL_ACTION_ID: i32 = -1;
+const MAX_DEPTH: i32 = 3;
+const NULL_ACTION_ID: (i32, i32) = (-1, 0);
 const INGREDIENT_TIER_COUNT: usize = 4;
-const REST_ID: i32 = -50;
+const REST_ID: (i32, i32) = (-50, 0);
 const MAX_INGREDIENT_COUNT: i32 = 10;
-static NO_INGREDIENT_CHANGE: [i32; INGREDIENT_TIER_COUNT] = [0; 4];
+const NO_INGREDIENT_CHANGE: [i32; INGREDIENT_TIER_COUNT] = [0; 4];
+const MAX_REPEAT_COUNT: i32 = 2;
+const STRATEGY: Strategy = Strategy::BreadthFirstSearch;
 
 mod solution {
     pub mod execution {
         use std::collections::HashSet;
         use std::io;
 
-        use crate::INGREDIENT_TIER_COUNT;
+        use crate::{INGREDIENT_TIER_COUNT, MAX_REPEAT_COUNT, STRATEGY};
         use crate::solution::models::{ActionType, Order, UnlearntSpell};
         use crate::solution::models::LearntSpell;
         use crate::solution::models::State;
-        use crate::solution::runtime::{ActionsRepository, Solver};
+        use crate::solution::runtime::{ActionsRepository, BestFirstSolutionFinder, BreadthFirstSolutionFinder, DefaultStateEvaluator, RandomStateEvaluator, SolutionFinder};
+
+        pub enum Strategy {
+            BestFirstSearch,
+            BreadthFirstSearch,
+        }
 
         pub struct Game;
 
@@ -30,22 +40,33 @@ mod solution {
                 // game loop
                 loop {
                     let (repo, my_inactive_spells) = Game::read_actions();
+                    let state_evaluator =
+                        //Box::new(RandomStateEvaluator::new());
+                        Box::new(DefaultStateEvaluator::new());
+
+                    let solution_finder: Box<dyn SolutionFinder> = match STRATEGY {
+                        Strategy::BreadthFirstSearch => Box::new(BreadthFirstSolutionFinder::new(
+                            state_evaluator)),
+                        Strategy::BestFirstSearch => Box::new(BestFirstSolutionFinder::new(
+                            state_evaluator))
+                    };
+
                     let state = Game::read_state(my_inactive_spells);
-                    let best_action = Solver::search(state, &repo);
+                    let best_action = solution_finder.search(state, &repo);
 
                     // in the first league: BREW <id> | WAIT; later: BREW <id> | CAST <id> [<times>] | LEARN <id> | REST | WAIT
                     if let Some(action) = repo.get_action(&best_action) {
                         match action.get_action_type() {
-                            ActionType::Cast => println!("CAST {} {}", &best_action, 1 /*We only cast once for now. TODO: Evaluate how to choose the best times*/),
-                            ActionType::Brew => println!("BREW {}", &best_action),
-                            ActionType::Learn => println!("LEARN {}", &best_action),
+                            ActionType::Cast => println!("CAST {} {}", &best_action.0, &best_action.1 /*We only cast once for now. TODO: Evaluate how to choose the best times*/),
+                            ActionType::Brew => println!("BREW {}", &best_action.0),
+                            ActionType::Learn => println!("LEARN {}", &best_action.0),
                             ActionType::Rest => println!("REST"),
                         }
 
                         continue;
                     }
 
-                    eprintln!("No valid action returned. {}", &best_action);
+                    eprintln!("No valid action returned. {:?}", &best_action);
 
                     //No action was found.
                     println!("WAIT");
@@ -69,44 +90,73 @@ mod solution {
                     io::stdin().read_line(&mut input_line).unwrap();
 
                     let inputs = input_line.split(" ").collect::<Vec<_>>();
-                    let action_id = parse_input!(inputs[0], i32); // the unique ID of this spell or recipe
+                    let action_id: i32 = parse_input!(inputs[0], i32); // the unique ID of this spell or recipe
                     let action_type = inputs[1].trim().to_string(); // in the first league: BREW; later: CAST, OPPONENT_CAST, LEARN, BREW
                     let action_type: &str = &action_type[..];
-                    let delta_0 = parse_input!(inputs[2], i32); // tier-0 ingredient change
-                    let delta_1 = parse_input!(inputs[3], i32); // tier-1 ingredient change
-                    let delta_2 = parse_input!(inputs[4], i32); // tier-2 ingredient change
-                    let delta_3 = parse_input!(inputs[5], i32); // tier-3 ingredient change
-                    let price = parse_input!(inputs[6], i32); // the price in rupees if this is a potion
-                    let tome_index = parse_input!(inputs[7], i32); // in the first two leagues: always 0; later: the index in the tome if this is a tome spell, equal to the read-ahead tax
-                    let tax_count = parse_input!(inputs[8], i32); // in the first two leagues: always 0; later: the amount of taxed tier-0 ingredients you gain from learning this spell
-                    let castable = parse_input!(inputs[9], i32); // in the first league: always 0; later: 1 if this is a castable player spell
-                    //let repeatable = parse_input!(inputs[10], i32); // for the first two leagues: always 0; later: 1 if this is a repeatable player spell
+                    let delta_0: i32 = parse_input!(inputs[2], i32); // tier-0 ingredient change
+                    let delta_1: i32 = parse_input!(inputs[3], i32); // tier-1 ingredient change
+                    let delta_2: i32 = parse_input!(inputs[4], i32); // tier-2 ingredient change
+                    let delta_3: i32 = parse_input!(inputs[5], i32); // tier-3 ingredient change
+                    let price: i32 = parse_input!(inputs[6], i32); // the price in rupees if this is a potion
+                    let tome_index: i32 = parse_input!(inputs[7], i32); // in the first two leagues: always 0; later: the index in the tome if this is a tome spell, equal to the read-ahead tax
+                    let tax_count: i32 = parse_input!(inputs[8], i32); // in the first two leagues: always 0; later: the amount of taxed tier-0 ingredients you gain from learning this spell
+                    let castable: i32 = parse_input!(inputs[9], i32); // in the first league: always 0; later: 1 if this is a castable player spell
+                    let repeatable: i32 = parse_input!(inputs[10], i32); // for the first two leagues: always 0; later: 1 if this is a repeatable player spell
 
                     match action_type {
-                        "OPPONENT_CAST" => {},
+                        "OPPONENT_CAST" => {}
                         "CAST" => {
-                            repo.add_learnt_spell(action_id, Box::new(LearntSpell::new(
-                                action_id,
-                                [delta_0, delta_1, delta_2, delta_3],
-                                //repeatable == 1,
-                            )));
+                            if repeatable == 0 {
+                                let new_action_id = (action_id, 1);
 
-                            if castable != 1 {
-                                my_inactive_spells.insert(action_id);
+                                repo.add_learnt_spell(new_action_id, Box::new(LearntSpell::new(
+                                    [delta_0, delta_1, delta_2, delta_3],
+                                    //repeatable == 1,
+                                )));
+
+                                if castable != 1 {
+                                    my_inactive_spells.insert(action_id);
+                                }
+                            } else {
+                                for i in 1..MAX_REPEAT_COUNT + 1 {
+                                    let repeatable_action_id = (action_id, i);
+
+                                    repo.add_learnt_spell(repeatable_action_id, Box::new(LearntSpell::new(
+                                        [delta_0 * i, delta_1 * i, delta_2 * i, delta_3 * i],
+                                        //repeatable == 1,
+                                    )));
+
+                                    if castable != 1 {
+                                        my_inactive_spells.insert(action_id);
+                                    }
+                                }
                             }
-                        },
+                        }
                         "LEARN" => {
-                            repo.add_unlearnt_spell(action_id, Box::new(UnlearntSpell::new(
-                                action_id,
-                                [delta_0, delta_1, delta_2, delta_3],
-                                //repeatable == 1,
-                                tome_index,
-                                tax_count,
-                            )));
-                        },
+                            if repeatable == 0 {
+                                let new_action_id = (action_id, 1);
+
+                                repo.add_unlearnt_spell(new_action_id, Box::new(UnlearntSpell::new(
+                                    [delta_0, delta_1, delta_2, delta_3],
+                                    //repeatable == 1,
+                                    tome_index,
+                                    tax_count,
+                                )));
+                            } else {
+                                for i in 1..MAX_REPEAT_COUNT + 1 {
+                                    let repeatable_action_id = (action_id, i);
+
+                                    repo.add_unlearnt_spell(repeatable_action_id, Box::new(UnlearntSpell::new(
+                                        [delta_0 * i, delta_1 * i, delta_2 * i, delta_3 * i],
+                                        //repeatable == 1,
+                                        tome_index,
+                                        tax_count,
+                                    )));
+                                }
+                            }
+                        }
                         "BREW" => {
-                            repo.add_order(action_id, Box::new(Order::new(
-                                action_id,
+                            repo.add_order((action_id, 0), Box::new(Order::new(
                                 price,
                                 [delta_0, delta_1, delta_2, delta_3])));
                         }
@@ -158,15 +208,18 @@ mod solution {
     /// Runtime Module
     pub mod runtime {
         use std::cmp::min;
-        use std::collections::{HashMap, HashSet, VecDeque};
+        use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
         use std::time::Instant;
+
+        use rand::{random, Rng, thread_rng};
 
         use crate::{INGREDIENT_TIER_COUNT, MAX_DEPTH, MAX_INGREDIENT_COUNT, NULL_ACTION_ID, REST_ID, TIMEOUT};
         use crate::solution::models::{Action, ActionType, LearntSpell, Order, Rest, State, UnlearntSpell};
 
         pub struct ActionsRepository {
-            actions: HashMap<i32, Box<dyn Action>>,
-            orders: Vec<i32>,
+            actions: HashMap<(i32, i32), Box<dyn Action>>,
+            orders: Vec<(i32, i32)>,
+            learnt_spells: Vec<(i32, i32)>,
         }
 
         impl ActionsRepository {
@@ -174,19 +227,21 @@ mod solution {
                 ActionsRepository {
                     actions: HashMap::new(),
                     orders: Vec::new(),
+                    learnt_spells: Vec::new(),
                 }
             }
 
-            pub fn add_order(&mut self, id: i32, order: Box<Order>) {
+            pub fn add_order(&mut self, id: (i32, i32), order: Box<Order>) {
                 self.actions.insert(id, order);
                 self.orders.push(id);
             }
 
-            pub fn add_learnt_spell(&mut self, id: i32, spell: Box<LearntSpell>) {
+            pub fn add_learnt_spell(&mut self, id: (i32, i32), spell: Box<LearntSpell>) {
                 self.actions.insert(id, spell);
+                self.learnt_spells.push(id);
             }
 
-            pub fn add_unlearnt_spell(&mut self, id: i32, spell: Box<UnlearntSpell>) {
+            pub fn add_unlearnt_spell(&mut self, id: (i32, i32), spell: Box<UnlearntSpell>) {
                 self.actions.insert(id, spell);
             }
 
@@ -194,16 +249,20 @@ mod solution {
                 self.actions.insert(REST_ID, Box::new(Rest::new()));
             }
 
-            pub fn get_action(&self, id: &i32) -> Option<&Box<dyn Action>> {
+            pub fn get_action(&self, id: &(i32, i32)) -> Option<&Box<dyn Action>> {
                 self.actions.get(id)
             }
 
-            pub fn get_action_ids(&self) -> Vec<&i32> {
+            pub fn get_action_ids(&self) -> Vec<&(i32, i32)> {
                 self.actions.keys().collect()
             }
 
-            pub fn get_order_ids(&self) -> &Vec<i32> {
+            pub fn get_order_ids(&self) -> &Vec<(i32, i32)> {
                 &self.orders
+            }
+
+            pub fn get_learnt_spell_ids(&self) -> &Vec<(i32, i32)> {
+                &self.learnt_spells
             }
         }
 
@@ -211,24 +270,38 @@ mod solution {
         pub struct ActionExecutor;
 
         impl ActionExecutor {
-            pub fn execute(repo: &Box<ActionsRepository>, state: &State, action_id: &i32) -> Option<Box<State>> {
-                let state = state;
-
-                let action: Option<&Box<dyn Action>> = repo.get_action(&action_id);
+            pub fn execute(repo: &Box<ActionsRepository>, state: &State, action_id: &(i32, i32)) -> Option<Box<State>> {
+                let action: Option<&Box<dyn Action>> = repo.get_action(action_id);
 
                 if action.is_none() {
                     return None;
                 }
 
                 let action = action.unwrap();
-                let root_action_id = state.get_root_action_id().unwrap_or(action_id.clone());
+                let root_action_id = state.get_root_action_id().unwrap_or(*action_id);
+//
+//                if true {
+//                    let mut rng = thread_rng();
+//
+//                    return Some(Box::new(
+//                        State::new(
+//                            [0;4],
+//                            0,
+//                            HashSet::new(),
+//                            HashSet::new(),
+//                            HashSet::new(),
+//                            Some(root_action_id),
+//                            state.get_depth() + 1,
+//                        )
+//                    ))
+//                }
 
                 let current_ingredients = state.get_ingredients();
 
                 if action.is_rest() {
                     return Some(Box::new(State::new(
                         [current_ingredients[0], current_ingredients[1], current_ingredients[2], current_ingredients[3]],
-                        state.get_rupees().clone(),
+                        *state.get_rupees(),
                         state.get_inactive_orders().clone(),
                         HashSet::new(), //Reset inactive spells
                         state.get_learnt_spells().clone(),
@@ -240,7 +313,7 @@ mod solution {
 
                 let ingredient_change = match action.get_action_type() {
                     ActionType::Learn => {
-                        if state.get_learnt_spells().contains(&action_id) {
+                        if state.get_learnt_spells().contains(&action_id.0) {
                             //If we already learned, it works like a regular spell
                             action.get_ingredient_change()
                         } else {
@@ -276,7 +349,7 @@ mod solution {
                     return None;
                 }
 
-                let mut new_rupees = state.get_rupees().clone();
+                let mut new_rupees = *state.get_rupees();
                 let mut learnt_spells = state.get_learnt_spells().clone();
                 let mut is_new_learn = false;
 
@@ -286,17 +359,17 @@ mod solution {
                         //eprintln!("Evaluating brew");
                         let order: &Order = action.as_any().downcast_ref::<Order>().unwrap();
                         new_rupees += order.get_price();
-                    },
+                    }
                     ActionType::Learn => {
-                        if !state.get_learnt_spells().contains(&action_id) {
+                        if !state.get_learnt_spells().contains(&action_id.0) {
                             //eprintln!("Evaluating learn");
                             let unlearnt_spell: &UnlearntSpell = action.as_any().downcast_ref::<UnlearntSpell>().unwrap();
                             new_ingredients[0] += min(MAX_INGREDIENT_COUNT - total_ingredients, unlearnt_spell.get_tax_gain());
-                            learnt_spells.insert(action_id.clone());
+                            learnt_spells.insert(action_id.0);
                             is_new_learn = true;
                         }
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
 
                 let mut new_state = State::new(
@@ -310,7 +383,7 @@ mod solution {
 
                 match action.get_action_type() {
                     ActionType::Brew => new_state.deactivate_order(action_id),
-                    ActionType::Rest => {},
+                    ActionType::Rest => {}
                     _ => new_state.deactivate_spell(action_id, is_new_learn),
                 }
 
@@ -319,90 +392,34 @@ mod solution {
             }
         }
 
-        pub struct Solver;
+        pub struct StateExpander;
 
-        impl Solver {
-            pub fn search(state: Box<State>, repo: &Box<ActionsRepository>) -> i32 {
-                let time = Instant::now();
-                eprintln!("Ingredients: {:?}", &state.get_ingredients());
-
-                let mut queue: VecDeque<Box<State>> = VecDeque::new();
-                queue.push_back(state);
-
-                //TODO: Score should cascade between parent nodes.
-                //let mut best: (f32, i32) = (std::f32::MIN, NULL_ACTION_ID); //(score, action_id)
-
-                let mut score_map: HashMap<i32, (i32, f32)> = HashMap::new(); //<root_id, <depth, score>>
-
-                let mut node_count = 0;
-
-                while !queue.is_empty() {
-                    let current_state = queue.pop_front().unwrap();
-
-                    if time.elapsed().as_millis() >= TIMEOUT - 1 {
-                        eprintln!("TIMEOUT. Depth: {}", &current_state.get_depth());
-                        break;
-                    }
-
-                    let root_action_id = current_state.get_root_action_id().unwrap_or(NULL_ACTION_ID);
-                    let score = Solver::score(&current_state, repo);
-
-                    node_count += 1;
-
-                    //eprintln!("Searching state with root id: {} at depth {}. Score is {}", root_action_id, current_state.get_depth(), score);
-//                    if let Some(action) = repo.get_action(&root_action_id) {
-//                        eprintln!("Id: {}; Action type: {:?}; Score: {}, Depth: {}", root_action_id, action.get_action_type(), score, current_state.get_depth());
-//                    }
-
-                    if root_action_id != NULL_ACTION_ID {
-                        if let Some(pair) = score_map.get_mut(&root_action_id) {
-                            if pair.0 > *current_state.get_depth() || score > pair.1 {
-                                score_map.insert(root_action_id, (*current_state.get_depth(), score));
-                            }
-                        } else {
-                            score_map.insert(root_action_id, (*current_state.get_depth(), score));
-                        }
-                    }
-
-                    if current_state.get_depth() >= &MAX_DEPTH {
-                        //eprintln!("Max depth reached.");
-                        continue;
-                    }
-
-                    for child in Solver::get_children(&current_state, repo, &time) {
-                        queue.push_back(child)
-                    }
-                }
-
-                eprintln!("Evaluated {} nodes.", &node_count);
-                let mut best: (i32, f32) = (NULL_ACTION_ID, std::f32::MIN); //best.1
-
-                for key in score_map.keys() {
-                    let value = score_map.get(key).unwrap();
-                    //eprintln!("Action: {}, Score: {}. Depth: {}", key, &value.1, &value.0);
-
-                    if value.1 > best.1 {
-                        //eprintln!("New best: ({}, {})", key, &value.1);
-                        best = (*key, value.1);
-                    }
-                }
-
-                best.0
-            }
-
-            fn get_children(state: &Box<State>, repo: &Box<ActionsRepository>, time: &Instant) -> Vec<Box<State>> {
+        impl StateExpander {
+            pub fn get_children(state: &Box<State>, repo: &Box<ActionsRepository>, time: &Instant, state_evaluator: &Box<dyn StateEvaluator>) -> Vec<Box<State>> {
                 let mut new_states: Vec<Box<State>> = Vec::new();
+
+//                let mut seen: HashSet<i32> = HashSet::new();
 
                 for action in repo.get_action_ids() {
                     if !state.is_action_active(&action) {
                         continue;
                     }
 
+//                    if action.1 != 0 && repo.get_action(action).unwrap().is_learn() && seen.contains(&action.0) {
+//                        continue;
+//                    } else {
+//                        seen.insert(action.0);
+//                    }
+
                     if time.elapsed().as_millis() >= TIMEOUT - 2 {
                         break;
                     }
 
-                    if let Some(new_state) = ActionExecutor::execute(repo, state, action) {
+                    let new_state = ActionExecutor::execute(repo, state, action);
+
+                    if new_state.is_some() {
+                        let mut new_state = new_state.unwrap();
+                        new_state.set_score(state_evaluator.evaluate(state, repo));
                         new_states.push(new_state);
                     }
                 }
@@ -410,16 +427,48 @@ mod solution {
                 //eprintln!("Branches for state at depth: {}, {}", state.get_depth(), new_states.len());
                 new_states
             }
+        }
 
-            fn score(state: &Box<State>, repo: &Box<ActionsRepository>) -> f32 {
-                //eprintln!("Scoring state: {:#?}", state);
+        pub trait StateEvaluator {
+            fn evaluate(&self, state: &Box<State>, repo: &Box<ActionsRepository>) -> f32;
+        }
 
+        pub struct DefaultStateEvaluator;
+
+        impl DefaultStateEvaluator {
+            pub fn new() -> DefaultStateEvaluator {
+                DefaultStateEvaluator {}
+            }
+        }
+
+        impl StateEvaluator for DefaultStateEvaluator {
+            fn evaluate(&self, state: &Box<State>, repo: &Box<ActionsRepository>) -> f32 {
                 let mut score = 0.0;
 
                 let ingredients = state.get_ingredients();
 
+//                if repo.get_learnt_spell_ids().len() < 15 {
+//                    score += state.get_learnt_spells().len() as f32 * 200.0;
+//                    score += ingredients[0] as f32 * 10.0;
+//                    score += ingredients[1] as f32 * 20.0;
+//                    score += ingredients[2] as f32 * 30.0;
+//                    score += ingredients[3] as f32 * 40.0;
+//                }
+
+//                for spell_id in repo.get_learnt_spell_ids() {
+//                    let spell = repo.get_action(spell_id).unwrap();
+//
+//                    let delta = spell.get_ingredient_change();
+//
+//                    score += delta[0] as f32 * 0.5;
+//                    score += delta[1] as f32 * 1.0;
+//                    score += delta[2] as f32 * 2.0;
+//                    score += delta[3] as f32 * 3.0;
+//                }
+
+
                 //We get rewarded for these as well.
-                score += (ingredients[1] + ingredients[2] + ingredients[3]) as f32 * 0.0;
+                //score += (ingredients[1] + ingredients[2] + ingredients[3]) as f32 * 0.0;
 
                 for order_id in repo.get_order_ids() {
                     let action = repo.get_action(order_id).unwrap();
@@ -427,17 +476,13 @@ mod solution {
                     let order_price = order.get_price().clone() as f32;
                     let order_requirement = order.get_ingredient_change();
 
-                    if state.get_inactive_orders().contains(order_id) {
+                    if state.get_inactive_orders().contains(&order_id.0) {
                         // Having rupees is the best place to be :).
-                        let mut completion_reward: f32 = 0.0;
-
-                        completion_reward += order_price * 100.0;
-                        completion_reward += order_requirement[0] as f32 * -0.5;
-                        completion_reward += order_requirement[1] as f32 * -1.0;
-                        completion_reward += order_requirement[2] as f32 * -2.0;
-                        completion_reward += order_requirement[3] as f32 * -3.0;
-
-                        score += completion_reward;
+                        score += order_price * 100.0;
+                        score += order_requirement[0] as f32 * -0.5;
+                        score += order_requirement[1] as f32 * -1.0;
+                        score += order_requirement[2] as f32 * -2.0;
+                        score += order_requirement[3] as f32 * -3.0;
 
                         //if debug { eprintln!("Added reward {} to score for order {}", completion_reward, order_id); }
                         continue;
@@ -471,15 +516,183 @@ mod solution {
                 score
             }
         }
+
+        pub struct RandomStateEvaluator;
+
+        impl RandomStateEvaluator {
+            pub fn new() -> RandomStateEvaluator {
+                RandomStateEvaluator {}
+            }
+        }
+
+        impl StateEvaluator for RandomStateEvaluator {
+            fn evaluate(&self, state: &Box<State>, repo: &Box<ActionsRepository>) -> f32 {
+                //rand::random()
+                *state.get_rupees() as f32
+            }
+        }
+
+        pub trait SolutionFinder {
+            fn search(&self, state: Box<State>, repo: &Box<ActionsRepository>) -> (i32, i32);
+        }
+
+        pub struct BreadthFirstSolutionFinder {
+            state_evaluator: Box<dyn StateEvaluator>,
+        }
+
+        impl BreadthFirstSolutionFinder {
+            pub fn new(state_evaluator: Box<dyn StateEvaluator>) -> BreadthFirstSolutionFinder {
+                BreadthFirstSolutionFinder {
+                    state_evaluator,
+                }
+            }
+        }
+
+        impl SolutionFinder for BreadthFirstSolutionFinder {
+            fn search(&self, state: Box<State>, repo: &Box<ActionsRepository>) -> (i32, i32) {
+                let time = Instant::now();
+                eprintln!("Ingredients: {:?}", &state.get_ingredients());
+
+                let mut queue: VecDeque<Box<State>> = VecDeque::new();
+                queue.push_back(state);
+
+                let mut score_map: HashMap<(i32, i32), (i32, f32)> = HashMap::new(); //<root_id, <depth, score>>
+
+                let mut node_count = 0;
+
+                while let Some(current_state) = queue.pop_front() {
+                    if time.elapsed().as_millis() >= TIMEOUT - 1 {
+                        eprintln!("TIMEOUT. Depth: {}", &current_state.get_depth());
+                        break;
+                    }
+
+                    let root_action_id = current_state.get_root_action_id().unwrap_or(NULL_ACTION_ID);
+                    let score = current_state.get_score();//self.state_evaluator.evaluate(&current_state, repo);
+
+                    //eprintln!("Exploring state with root action {} at depth {} with score {}", root_action_id.0, current_state.get_depth(), score);
+
+                    node_count += 1;
+
+                    if root_action_id != NULL_ACTION_ID {
+                        if let Some(pair) = score_map.get_mut(&root_action_id) {
+                            if pair.0 > *current_state.get_depth() || *score > pair.1 {
+                                score_map.insert(root_action_id, (*current_state.get_depth(), *score));
+                            }
+                        } else {
+                            score_map.insert(root_action_id, (*current_state.get_depth(), *score));
+                        }
+                    }
+
+                    if current_state.get_depth() >= &MAX_DEPTH {
+                        //eprintln!("Max depth reached.");
+                        continue;
+                    }
+
+                    for child in StateExpander::get_children(&current_state, repo, &time, &self.state_evaluator) {
+                        queue.push_back(child)
+                    }
+                }
+
+                eprintln!("Evaluated {} nodes.", &node_count);
+                let mut best: ((i32, i32), f32) = (NULL_ACTION_ID, std::f32::MIN); //best.1
+
+                for key in score_map.keys() {
+                    let value = score_map.get(key).unwrap();
+                    //eprintln!("Action: {}, Score: {}. Depth: {}", key, &value.1, &value.0);
+
+                    if value.1 > best.1 {
+                        //eprintln!("New best: ({}, {})", key, &value.1);
+                        best = (*key, value.1);
+                    }
+                }
+
+                best.0
+            }
+        }
+
+        pub struct BestFirstSolutionFinder {
+            state_evaluator: Box<dyn StateEvaluator>,
+        }
+
+        impl BestFirstSolutionFinder {
+            pub fn new(state_evaluator: Box<dyn StateEvaluator>) -> BestFirstSolutionFinder {
+                BestFirstSolutionFinder {
+                    state_evaluator,
+                }
+            }
+        }
+
+        impl SolutionFinder for BestFirstSolutionFinder {
+            fn search(&self, state: Box<State>, repo: &Box<ActionsRepository>) -> (i32, i32) {
+                let time = Instant::now();
+                eprintln!("Ingredients: {:?}", &state.get_ingredients());
+
+                let mut queue: BinaryHeap<Box<State>> = BinaryHeap::new();
+                queue.push(state);
+
+                let mut score_map: HashMap<(i32, i32), (i32, f32)> = HashMap::new(); //<root_id, <depth, score>>
+
+                let mut node_count = 0;
+
+                while let Some(current_state) = queue.pop() {
+                    if time.elapsed().as_millis() >= TIMEOUT - 1 {
+                        eprintln!("TIMEOUT. Depth: {}", &current_state.get_depth());
+                        break;
+                    }
+
+                    let root_action_id = current_state.get_root_action_id().unwrap_or(NULL_ACTION_ID);
+                    let score = current_state.get_score();//self.state_evaluator.evaluate(&current_state, repo);
+
+                    //eprintln!("Exploring state with root action {} at depth {} with score {}", root_action_id.0, current_state.get_depth(), score);
+
+                    node_count += 1;
+
+                    if root_action_id != NULL_ACTION_ID {
+                        if let Some(pair) = score_map.get_mut(&root_action_id) {
+                            if pair.0 > *current_state.get_depth() || *score > pair.1 {
+                                score_map.insert(root_action_id, (*current_state.get_depth(), *score));
+                            }
+                        } else {
+                            score_map.insert(root_action_id, (*current_state.get_depth(), *score));
+                        }
+                    }
+
+                    if current_state.get_depth() >= &MAX_DEPTH {
+                        //eprintln!("Max depth reached.");
+                        continue;
+                    }
+
+                    for child in StateExpander::get_children(&current_state, repo, &time, &self.state_evaluator) {
+                        queue.push(child)
+                    }
+                }
+
+                eprintln!("Evaluated {} nodes.", &node_count);
+                let mut best: ((i32, i32), f32) = (NULL_ACTION_ID, std::f32::MIN);
+
+                for key in score_map.keys() {
+                    let value = score_map.get(key).unwrap();
+                    //eprintln!("Action: {}, Score: {}. Depth: {}", key, &value.1, &value.0);
+
+                    if value.1 > best.1 {
+                        eprintln!("New best: ({}, {}). Depth: {}", key.0, &value.1, value.0);
+                        best = (*key, value.1);
+                    }
+                }
+
+                best.0
+            }
+        }
     }
 
     /// Models Module
     pub mod models {
         use std::any::Any;
+        use std::cmp::Ordering;
         use std::collections::HashSet;
         use std::hash::{Hash, Hasher};
 
-        use crate::{INGREDIENT_TIER_COUNT, NO_INGREDIENT_CHANGE, REST_ID};
+        use crate::{INGREDIENT_TIER_COUNT, NO_INGREDIENT_CHANGE};
 
         pub enum ActionType {
             Cast,
@@ -489,12 +702,17 @@ mod solution {
         }
 
         pub trait Action {
-            fn get_id(&self) -> &i32;
             fn get_ingredient_change(&self) -> &[i32; INGREDIENT_TIER_COUNT];
             fn get_action_type(&self) -> ActionType;
+
             fn is_rest(&self) -> bool {
                 false
             }
+
+            fn is_learn(&self) -> bool {
+                false
+            }
+
             fn as_any(&self) -> &dyn Any;
         }
 
@@ -507,10 +725,6 @@ mod solution {
         }
 
         impl Action for Rest {
-            fn get_id(&self) -> &i32 {
-                &REST_ID
-            }
-
             fn get_ingredient_change(&self) -> &[i32; 4] {
                 &NO_INGREDIENT_CHANGE
             }
@@ -529,33 +743,19 @@ mod solution {
         }
 
         pub struct LearntSpell {
-            id: i32,
             ingredient_change: [i32; INGREDIENT_TIER_COUNT],
-            //is_repeatable: bool,
         }
 
         impl LearntSpell {
             pub fn new(
-                id: i32,
-                ingredient_change: [i32; INGREDIENT_TIER_COUNT],
-                /*is_repeatable: bool*/) -> LearntSpell {
+                ingredient_change: [i32; INGREDIENT_TIER_COUNT]) -> LearntSpell {
                 LearntSpell {
-                    id,
                     ingredient_change,
-                    //is_repeatable,
                 }
             }
-
-//            fn is_repeatable(&self) -> bool {
-//                self.is_repeatable
-//            }
         }
 
         impl Action for LearntSpell {
-            fn get_id(&self) -> &i32 {
-                &self.id
-            }
-
             fn get_ingredient_change(&self) -> &[i32; INGREDIENT_TIER_COUNT] {
                 &self.ingredient_change
             }
@@ -570,7 +770,6 @@ mod solution {
         }
 
         pub struct UnlearntSpell {
-            id: i32,
             ingredient_change: [i32; INGREDIENT_TIER_COUNT],
             //is_repeatable: bool,
             read_ahead_tax: i32,
@@ -579,13 +778,11 @@ mod solution {
 
         impl UnlearntSpell {
             pub fn new(
-                id: i32,
                 ingredient_change: [i32; INGREDIENT_TIER_COUNT],
                 //is_repeatable: bool,
                 read_ahead_tax: i32,
                 tax_gain: i32) -> UnlearntSpell {
                 UnlearntSpell {
-                    id,
                     ingredient_change,
                     //is_repeatable,
                     read_ahead_tax,
@@ -607,10 +804,6 @@ mod solution {
         }
 
         impl Action for UnlearntSpell {
-            fn get_id(&self) -> &i32 {
-                &self.id
-            }
-
             fn get_ingredient_change(&self) -> &[i32; INGREDIENT_TIER_COUNT] {
                 &self.ingredient_change
             }
@@ -619,21 +812,23 @@ mod solution {
                 ActionType::Learn
             }
 
+            fn is_learn(&self) -> bool {
+                true
+            }
+
             fn as_any(&self) -> &dyn Any {
                 self
             }
         }
 
         pub struct Order {
-            id: i32,
             ingredient_change: [i32; INGREDIENT_TIER_COUNT],
             price: i32,
         }
 
         impl Order {
-            pub fn new(id: i32, price: i32, ingredient_change: [i32; INGREDIENT_TIER_COUNT]) -> Order {
+            pub fn new(price: i32, ingredient_change: [i32; INGREDIENT_TIER_COUNT]) -> Order {
                 Order {
-                    id,
                     price,
                     ingredient_change,
                 }
@@ -645,10 +840,6 @@ mod solution {
         }
 
         impl Action for Order {
-            fn get_id(&self) -> &i32 {
-                &self.id
-            }
-
             fn get_ingredient_change(&self) -> &[i32; INGREDIENT_TIER_COUNT] {
                 &self.ingredient_change
             }
@@ -662,15 +853,16 @@ mod solution {
             }
         }
 
-        #[derive(Eq, PartialEq)]
+        #[derive(PartialEq)]
         pub struct State {
             my_ingredients: [i32; INGREDIENT_TIER_COUNT],
             my_rupees: i32,
             inactive_orders: HashSet<i32>,
             inactive_spells: HashSet<i32>,
             learnt_spells: HashSet<i32>,
-            root_action_id: Option<i32>,
+            root_action_id: Option<(i32, i32)>,
             depth: i32,
+            score: f32,
         }
 
         impl Hash for State {
@@ -692,6 +884,20 @@ mod solution {
             }
         }
 
+        impl Eq for State {}
+
+        impl Ord for State {
+            fn cmp(&self, other: &State) -> Ordering {
+                self.score.partial_cmp(&other.score).unwrap()
+            }
+        }
+
+        impl PartialOrd for State {
+            fn partial_cmp(&self, other: &State) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
         impl State {
             pub fn new(
                 my_ingredients: [i32; INGREDIENT_TIER_COUNT],
@@ -699,7 +905,7 @@ mod solution {
                 inactive_orders: HashSet<i32>,
                 inactive_spells: HashSet<i32>,
                 learnt_spells: HashSet<i32>,
-                root_action_id: Option<i32>,
+                root_action_id: Option<(i32, i32)>,
                 depth: i32) -> State {
                 State {
                     my_ingredients,
@@ -709,6 +915,7 @@ mod solution {
                     learnt_spells,
                     root_action_id,
                     depth,
+                    score: 0.0,
                 }
             }
 
@@ -732,7 +939,7 @@ mod solution {
                 &self.learnt_spells
             }
 
-            pub fn get_root_action_id(&self) -> &Option<i32> {
+            pub fn get_root_action_id(&self) -> &Option<(i32, i32)> {
                 &self.root_action_id
             }
 
@@ -740,21 +947,29 @@ mod solution {
                 &self.depth
             }
 
-            pub fn is_action_active(&self, action_id: &i32) -> bool {
-                self.learnt_spells.contains(action_id) ||
-                    (!self.inactive_spells.contains(action_id) &&
-                        !self.inactive_orders.contains(action_id))
+            pub fn get_score(&self) -> &f32 {
+                &self.score
             }
 
-            pub fn deactivate_order(&mut self, action_id: &i32) {
-                self.inactive_orders.insert(action_id.clone());
+            pub fn set_score(&mut self, score: f32) {
+                self.score = score;
             }
 
-            pub fn deactivate_spell(&mut self, action_id: &i32, is_new_learn: bool) {
-                if !is_new_learn && self.learnt_spells.contains(action_id) {
-                    self.learnt_spells.remove(action_id);
+            pub fn is_action_active(&self, action_id: &(i32, i32)) -> bool {
+                self.learnt_spells.contains(&action_id.0) ||
+                    (!self.inactive_spells.contains(&action_id.0) &&
+                        !self.inactive_orders.contains(&action_id.0))
+            }
+
+            pub fn deactivate_order(&mut self, action_id: &(i32, i32)) {
+                self.inactive_orders.insert(action_id.0);
+            }
+
+            pub fn deactivate_spell(&mut self, action_id: &(i32, i32), is_new_learn: bool) {
+                if !is_new_learn && self.learnt_spells.contains(&action_id.0) {
+                    self.learnt_spells.remove(&action_id.0);
                 } else {
-                    self.inactive_spells.insert(action_id.clone());
+                    self.inactive_spells.insert(action_id.0);
                 }
             }
         }

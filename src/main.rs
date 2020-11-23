@@ -10,10 +10,10 @@ macro_rules! parse_input {
 }
 
 fn run() {
-
-//    let mut brewed_potion_count = 0;
-//    let mut opp_prev_score = 0;
-//    let mut opp_brewed_count = 0;
+    let mut opp_prev_score = 0;
+    let mut opp_brew_count = 0;
+    let mut my_brew_count = 0;
+    let mut turn_count = 1;
 
     // game loop
     loop {
@@ -26,8 +26,10 @@ fn run() {
             my_cast: Vec::new(),
             opp_cast: Vec::new(),
             tome_spells: Vec::new(),
-            //unbrewable_potion_ids: HashSet::new(),
             my_disabled_spells: HashSet::new(),
+            my_brew_count,
+            opp_brew_count: 0,
+            turn_count,
         };
 
         let mut input_line = String::new();
@@ -109,50 +111,31 @@ fn run() {
                 game.my_rupees = score;
             } else {
                 game.opp_ingredients = ingredients;
-                game.opp_rupees = score;
+                game.opp_rupees = score + 10;
 
-//                if score > opp_prev_score {
-//                    opp_prev_score = score;
-//                    opp_brewed_count += 1;
-//                }
+                if opp_prev_score != score {
+                    opp_brew_count += 1;
+                    game.opp_brew_count = opp_brew_count + 1;
+                    opp_prev_score = score;
+                }
             }
         }
 
-        // Write an action using println!("message...");
-        // To debug: eprintln!("Debug message...");
-
-
-        // in the first league: BREW <id> | WAIT; later: BREW <id> | CAST <id> [<times>] | LEARN <id> | REST | WAIT
-
-//        for potion in &game.potions {
-//            if let None = pay(&potion.delta, &game.my_ingredients) {
-//                game.unbrewable_potion_ids.insert(potion.id);
-//            }
-//        }
-
-        let (action, score) = get_best_action(&game);
-
-//        if let Some(best_potion) = get_best_brewable_potion(&game) {
-//            if (best_potion.price * 5) as f32 > score * 0.5 ||
-//                best_potion.price > 10 ||
-//                max(brewed_potion_count, opp_brewed_count) >= 4 ||
-//                game.opp_rupees - game.my_rupees > 15 {
-//
-//                brewed_potion_count += 1;
-//                println!("BREW {}", best_potion.id);
-//                continue;
-//            }
-//        } else {
-//            eprintln!("Can't brew any potions.");
-//        }
+        eprintln!("My brew: {}. Opp brew: {}. Turn: {}", my_brew_count, opp_brew_count, turn_count);
+        let action = get_best_action(&game);
 
         match action {
-            Brew(id) => println!("BREW {}", id),
+            Brew(id) => {
+                my_brew_count += 1;
+                println!("BREW {}", id);
+            },
             Cast(id, times) => println!("CAST {} {}", id, times),
             Learn(id) => println!("LEARN {}", id),
             Wait => println!("WAIT"),
             Rest => println!("REST"),
         }
+
+        turn_count += 1;
     }
 }
 
@@ -165,8 +148,10 @@ struct GameState {
     my_cast: Vec<Spell>,
     opp_cast: Vec<Spell>,
     tome_spells: Vec<Spell>,
-    //unbrewable_potion_ids: HashSet<i32>,
     my_disabled_spells: HashSet<i32>,
+    my_brew_count: i32,
+    opp_brew_count: i32,
+    turn_count: i32,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -216,20 +201,10 @@ struct State {
     depth: i32,
     root_action: Action,
     cumulative_score: f32,
+    my_rupees: i32,
 }
-//
-//fn get_best_brewable_potion(game: &GameState) -> Option<&Potion> {
-//    for potion in &game.potions {
-//        if let Some(_) = pay(&potion.delta, &game.my_ingredients) {
-//            eprintln!("Can brew potion {} with delta {:?}. Price is {} and my inv: {:?}", potion.id, potion.delta, potion.price, game.my_ingredients);
-//            return Some(potion);
-//        }
-//    }
-//
-//    None
-//}
 
-fn get_best_action(game: &GameState) -> (Action, f32) {
+fn get_best_action(game: &GameState) -> Action {
     let time = Instant::now();
 
     let state = State {
@@ -239,6 +214,7 @@ fn get_best_action(game: &GameState) -> (Action, f32) {
         depth: 0,
         root_action: Action::Wait,
         cumulative_score: 0.0,
+        my_rupees: game.my_rupees,
         brewed_potions: HashSet::new(),
     };
 
@@ -251,8 +227,7 @@ fn get_best_action(game: &GameState) -> (Action, f32) {
     let mut best = (Wait, std::f32::MIN);
 
     while let Some(current_state) = queue.pop_front() {
-        let score = (score(&current_state, game) + current_state.cumulative_score);// / (current_state.depth + 1 )as f32;
-        //eprintln!("Score= {} for state: {:#?}", score, current_state);
+        let score = score(&current_state, game) + current_state.cumulative_score;
 
         if current_state.depth > 0 && best.1 < score {
             best = (current_state.root_action, score);
@@ -263,6 +238,10 @@ fn get_best_action(game: &GameState) -> (Action, f32) {
 
         if is_timeout(&time) {
             eprintln!("TIMEOUT. Depth: {}, Width: {}, Nodes: {}", max_depth, max_width, node_count);
+            break;
+        }
+
+        if current_state.depth > 4 {
             break;
         }
 
@@ -278,32 +257,47 @@ fn get_best_action(game: &GameState) -> (Action, f32) {
     }
 
     eprintln!("Search Complete. Depth: {}, Width: {}, Nodes: {}. Best: {:?}", max_depth, max_width, node_count, best);
-    best
+    best.0
 }
 
 fn score(state: &State, game: &GameState) -> f32 {
     let mut score = 0.0;
 
-//    for i in 1..5 as i32 {
-//        score += ((i * 2) as f32 - 1.8) + state.ingredients[(i - 1) as usize] as f32;
-//    }
+    let disabled_spell_count = (game.my_disabled_spells.len() + state.disabled_spells.len()) as f32;
+    ;
+    let disabled_spell_ratio = disabled_spell_count / (game.my_cast.len() + state.new_spells.len()) as f32;
+
+    //We want to have castable spells so punish more when spells to cast are less
+    //score -= disabled_spell_count;// / * 50.0 * (game.turn_count as f32 * 0.001);
+    score -= disabled_spell_ratio * (game.turn_count as f32 * 0.05) * 35.0;
+
+    score += state.new_spells.len() as f32 * (1.0 / (game.turn_count as f32 * 0.001));
+    score -= state.new_spells.len() as f32 * (game.turn_count as f32 * 0.001);
+
+    //TODO: Testing
+    //score += (state.my_rupees - game.opp_rupees) as f32 * max(game.opp_brew_count, game.my_brew_count + state.brewed_potions.len() as i32) as f32;
+
 
     for potion in &game.potions {
         if !state.brewed_potions.contains(&potion.id) {
             for i in 0..4 {
+                // We want to be able to brew potions. The higher the ingredient tier, the better
                 score += ((state.ingredients[i] + potion.delta[i]) as f32 * potion.price as f32 * ((i + 1) * 3) as f32) / 5.0;
             }
+
+            if let Some(_) = pay(&potion.delta, &game.opp_ingredients) {
+                score -= state.depth as f32 * 2.0;
+            }
+
             continue;
         }
 
-        score += potion.price as f32 * 80.0
-//        if !game.unbrewable_potion_ids.contains(&potion.id) {
-//            continue;
-//        }
+        //score += 2000.0;// * game.turn_count as f32 * 0.3;
+        score += potion.price as f32 * 80.0; //* (game.turn_count as f32 * 0.067);
+//        let max_brewed = max(game.opp_brew_count, game.my_brew_count + state.brewed_potions.len() as i32) as f32;
 //
-        //eprintln!("Score brew");
-//        if let Some(_) = pay(&potion.delta, &state.ingredients) {
-//            score += potion.price as f32 / 5.0; //5 total potions
+//        if max_brewed >= 4.0 {
+//            score += max_brewed - 4.0 * 10.0;
 //        }
     }
 
@@ -315,6 +309,12 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
     let new_score = parent_score;
     let new_depth = state.depth + 1;
 
+    //TODO: Testing
+//    if state.brewed_potions.len() as i32 + game.my_brew_count >= 6 {
+//        //eprintln!("End of game.");
+//        return new_states;
+//    }
+
     if !state.disabled_spells.is_empty() {
         new_states.push(State {
             ingredients: state.ingredients,
@@ -323,6 +323,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
             depth: new_depth,
             cumulative_score: new_score,
             brewed_potions: state.brewed_potions.clone(),
+            my_rupees: state.my_rupees,
             root_action: match state.root_action {
                 Wait => Rest,
                 _ => state.root_action,
@@ -335,7 +336,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
             break;
         }
 
-        if state.brewed_potions.contains(&potion.id) {
+        if state.brewed_potions.contains(&potion.id) {// || game.turn_count < 15
             continue;
         }
 
@@ -350,6 +351,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
                 depth: new_depth,
                 cumulative_score: new_score,
                 brewed_potions,
+                my_rupees: state.my_rupees + potion.price,
                 root_action: match state.root_action {
                     Wait => Brew(potion.id),
                     _ => state.root_action,
@@ -367,7 +369,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
             continue;
         }
 
-        for times in 1..3 {
+        for times in 1..4 {
             let delta = match spell.repeatable {
                 true => [spell.delta[0] * times, spell.delta[1] * times, spell.delta[2] * times, spell.delta[3] * times],
                 false => spell.delta,
@@ -384,6 +386,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
                     depth: new_depth,
                     cumulative_score: new_score,
                     brewed_potions: state.brewed_potions.clone(),
+                    my_rupees: state.my_rupees,
                     root_action: match state.root_action {
                         Wait => Cast(spell.id, times),
                         _ => state.root_action,
@@ -408,7 +411,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
 
         if state.new_spells.contains(&spell.id) {
             //Castable
-            for times in 1..3 {
+            for times in 1..5 {
                 let delta = match spell.repeatable {
                     true => [spell.delta[0] * times, spell.delta[1] * times, spell.delta[2] * times, spell.delta[3] * times],
                     false => spell.delta,
@@ -425,6 +428,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
                         depth: new_depth,
                         cumulative_score: new_score,
                         brewed_potions: state.brewed_potions.clone(),
+                        my_rupees: state.my_rupees,
                         root_action: state.root_action, //Special case since it was already not castable. i.e not original
                     });
                 }
@@ -436,6 +440,10 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
 
             continue;
         }
+//
+//        if game.turn_count >= 15 {
+//            continue;
+//        }
 
         //Learn
         if let Some(new_ingredients) = pay(&[-spell.read_ahead_tax, 0, 0, 0], &state.ingredients).as_mut() {
@@ -452,6 +460,7 @@ fn get_children(state: &State, game: &GameState, parent_score: f32, time: &Insta
                 depth: new_depth,
                 cumulative_score: new_score,
                 brewed_potions: state.brewed_potions.clone(),
+                my_rupees: state.my_rupees,
                 root_action: match state.root_action {
                     Wait => Learn(spell.id),
                     _ => state.root_action,
@@ -488,11 +497,6 @@ fn is_timeout(time: &Instant) -> bool {
     time.elapsed().as_millis() >= 41
 }
 
-/**
- * Auto-generated code below aims at helping you parse
- * the standard input according to the problem statement.
- **/
 fn main() {
-    //println!("{:?}", pay([0;4], [1;4]));
     run();
 }
